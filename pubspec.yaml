@@ -35,7 +35,7 @@ dependencies:
   # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.8
   
-  # Basic dependencies for wallet functionality
+  # Real Solana blockchain integration
   http: ^1.2.2
   crypto: ^3.0.6
   bip39: ^1.0.6
@@ -43,6 +43,14 @@ dependencies:
   url_launcher: ^6.3.1
   shared_preferences: ^2.3.3
   convert: ^3.1.1
+  
+  # Additional dependencies for production features
+  local_auth: ^2.3.0  # Biometric authentication
+  flutter_secure_storage: ^9.2.2  # Secure storage for keys
+  intl: ^0.19.0  # Date/time formatting
+  mobile_scanner: ^7.0.1  # QR code scanning
+  qr_flutter: ^4.1.0  # QR code generation
+  connectivity_plus: ^6.1.0  # Network connectivity check
 
 dev_dependencies:
   flutter_test:
