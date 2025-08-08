@@ -59,7 +59,7 @@ class SecureStorageService {
     }
   }
   
-  // 지갑 정보 안전하게 저장
+  // 지갑 정보 안전하게 저장 (기존 SolanaWallet용)
   static Future<bool> saveWallet(SolanaWallet wallet) async {
     try {
       final walletData = {
@@ -68,6 +68,20 @@ class SecureStorageService {
         'createdAt': DateTime.now().millisecondsSinceEpoch,
       };
       
+      await _secureStorage.write(
+        key: _walletKey,
+        value: jsonEncode(walletData),
+      );
+      
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+  
+  // Phantom 지갑 연결 정보 저장
+  static Future<bool> saveWalletData(Map<String, dynamic> walletData) async {
+    try {
       await _secureStorage.write(
         key: _walletKey,
         value: jsonEncode(walletData),

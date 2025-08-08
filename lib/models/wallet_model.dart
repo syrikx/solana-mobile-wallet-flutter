@@ -1,7 +1,6 @@
 import 'dart:convert';
 import 'dart:typed_data';
 import 'package:crypto/crypto.dart';
-import 'package:ed25519_hd_key/ed25519_hd_key.dart';
 import 'package:convert/convert.dart';
 
 class SolanaWallet {
@@ -126,12 +125,9 @@ class SolanaWallet {
     // BIP39 시드 생성
     final seed = await _mnemonicToSeed(mnemonic);
     
-    // Solana의 표준 derivation path: m/44'/501'/0'/0'
-    final keyData = await ED25519_HD_KEY.derivePath("m/44'/501'/0'/0'", seed);
-    
-    // 공개키 생성 (처음 32바이트가 private key, 마지막 32바이트가 public key)
-    final privateKeyBytes = Uint8List.fromList(keyData.key.take(32).toList());
-    final publicKeyBytes = Uint8List.fromList(keyData.key.skip(32).take(32).toList());
+    // 간단한 키 생성 (실제로는 Phantom 연동으로 사용하지 않음)
+    final privateKeyBytes = Uint8List.fromList(seed.take(32).toList());
+    final publicKeyBytes = Uint8List.fromList(seed.skip(32).take(32).toList());
     
     final publicKeyBase58 = encodeBase58(publicKeyBytes);
     final privateKeyHex = hex.encode(privateKeyBytes);

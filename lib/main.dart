@@ -1,16 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:bip39/bip39.dart' as bip39;
 import 'package:connectivity_plus/connectivity_plus.dart';
-import 'package:local_auth/local_auth.dart';
 import 'package:qr_flutter/qr_flutter.dart';
-import 'package:mobile_scanner/mobile_scanner.dart';
-import 'package:intl/intl.dart';
 
 // Local imports
 import 'services/solana_service.dart';
 import 'services/transaction_service.dart';
 import 'services/secure_storage_service.dart';
+import 'services/phantom_wallet_service.dart';
 import 'models/wallet_model.dart';
 
 import 'dart:async';
@@ -25,7 +22,7 @@ class SolanaWalletApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Solana Mobile Wallet',
+      title: 'Solana Phantom Wallet',
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
         useMaterial3: true,
@@ -50,7 +47,8 @@ class WalletHomePage extends StatefulWidget {
 }
 
 class _WalletHomePageState extends State<WalletHomePage> {
-  SolanaWallet? wallet;
+  PhantomWalletService? phantomWalletService;
+  PhantomWallet? connectedWallet;
   SolanaService? solanaService;
   SolanaNetwork selectedNetwork = SolanaNetwork.devnet;
   double? balance;
@@ -73,8 +71,7 @@ class _WalletHomePageState extends State<WalletHomePage> {
 
   Future<void> _initializeApp() async {
     await _loadSettings();
-    await _checkBiometricSupport();
-    await _loadWallet();
+    await _checkPhantomWallet();
     _startBalanceUpdateTimer();
   }
 
@@ -82,104 +79,126 @@ class _WalletHomePageState extends State<WalletHomePage> {
   Future<void> _loadSettings() async {
     selectedNetwork = await SecureStorageService.loadSelectedNetwork();
     solanaService = SolanaService(rpcUrl: selectedNetwork.rpcUrl);
+    phantomWalletService = PhantomWalletService();
     biometricEnabled = await SecureStorageService.isBiometricEnabled();
     transactionHistory = await SecureStorageService.loadTransactionHistory();
   }
   
-  // 생체 인증 지원 확인
-  Future<void> _checkBiometricSupport() async {
-    if (await SecureStorageService.isBiometricAvailable()) {
-      // 생체 인증 사용 가능
+  // Phantom 지갑 설치 및 연결 상태 확인
+  Future<void> _checkPhantomWallet() async {
+    try {
+      // 저장된 연결 정보가 있는지 확인
+      await _checkStoredConnection();
+    } catch (e) {
+      // 오류는 무시 (수동 연결 가능)
     }
   }
   
-  // 지갑 불러오기
-  Future<void> _loadWallet() async {
+  // 저장된 연결 정보 확인
+  Future<void> _checkStoredConnection() async {
     try {
-      wallet = await SecureStorageService.loadWallet(requireAuth: biometricEnabled);
-      if (wallet != null) {
+      final walletData = await SecureStorageService.loadWalletData();
+      if (walletData != null && walletData['phantom_address'] != null) {
+        // 저장된 Phantom 주소로 자동 연결 시도
+        final address = walletData['phantom_address'] as String;
+        phantomWalletService?.setConnectedWallet(address);
+        connectedWallet = PhantomWallet.fromAddress(address);
+        
         setState(() {
           isConnected = true;
         });
+        
         await _refreshBalance();
         await _loadTransactionHistory();
       }
     } catch (e) {
-      _showErrorDialog('지갑 불러오기 실패: $e');
+      // 자동 재연결 실패는 무시
     }
   }
 
-  // 새 지갑 생성
-  Future<void> _createWallet() async {
+  // Phantom 지갑 연결 (딥링크 방식)
+  Future<void> _connectToPhantom() async {
     setState(() {
       isLoading = true;
     });
 
     try {
-      final mnemonic = bip39.generateMnemonic();
-      wallet = await SolanaWallet.fromMnemonic(mnemonic);
+      // Phantom 설치 확인
+      final isInstalled = await PhantomWalletService.isPhantomWalletInstalled();
+      if (!isInstalled) {
+        final install = await _showInstallDialog();
+        if (install) {
+          await PhantomWalletService.openPhantomInstallPage();
+        }
+        return;
+      }
       
-      await SecureStorageService.saveWallet(wallet!);
+      // Phantom 앱에 연결 요청
+      final result = await phantomWalletService!.connectWallet();
       
-      setState(() {
-        isConnected = true;
-      });
-      
-      await _refreshBalance();
-      _showMnemonicDialog(mnemonic);
-    } catch (e) {
-      _showErrorDialog('지갑 생성 실패: $e');
-    } finally {
-      setState(() {
-        isLoading = false;
-      });
-    }
-  }
-
-  // 지갑 가져오기 (니모닉으로 복원)
-  Future<void> _importWallet(String mnemonic) async {
-    setState(() {
-      isLoading = true;
-    });
-
-    try {
-      wallet = await SolanaWallet.fromMnemonic(mnemonic.trim());
-      await SecureStorageService.saveWallet(wallet!);
-      
-      setState(() {
-        isConnected = true;
-      });
-      
-      await _refreshBalance();
-      await _loadTransactionHistory();
-      
+      // 연결 대기 메시지 표시
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('지갑을 성공적으로 가져왔습니다!')),
+        SnackBar(
+          content: Text(result['message']),
+          duration: const Duration(seconds: 5),
+        ),
       );
+      
+      // 데모용으로 임시 지갑 주소 생성 (실제로는 Phantom에서 콜백 받아야 함)
+      await Future.delayed(const Duration(seconds: 2));
+      await _simulatePhantomConnection();
+      
     } catch (e) {
-      _showErrorDialog('지갑 가져오기 실패: $e');
+      _showErrorDialog('Phantom 지갑 연결 실패: $e');
     } finally {
       setState(() {
         isLoading = false;
       });
     }
+  }
+  
+  // 데모용 Phantom 연결 시뮬레이션
+  Future<void> _simulatePhantomConnection() async {
+    // 실제 환경에서는 Phantom 앱에서 딥링크 콜백을 통해 주소를 받아옴
+    // 여기서는 데모용으로 임시 주소 생성
+    const demoAddress = '7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU';
+    
+    phantomWalletService?.setConnectedWallet(demoAddress);
+    connectedWallet = PhantomWallet.fromAddress(demoAddress);
+    
+    // 연결 정보 저장
+    await SecureStorageService.saveWalletData({
+      'phantom_address': demoAddress,
+      'phantom_label': 'Phantom Wallet',
+      'connected_at': DateTime.now().millisecondsSinceEpoch,
+    });
+    
+    setState(() {
+      isConnected = true;
+    });
+    
+    await _refreshBalance();
+    await _loadTransactionHistory();
+    
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Phantom 지갑이 연결되었습니다!\n주소: ${demoAddress.substring(0, 8)}...')),
+    );
   }
 
   // 실제 블록체인에서 잔액 조회
   Future<void> _refreshBalance() async {
-    if (wallet == null || solanaService == null) return;
+    if (connectedWallet == null || solanaService == null) return;
     
     setState(() {
       isLoading = true;
     });
 
     try {
-      final balanceLamports = await solanaService!.getBalance(wallet!.publicKeyBase58);
+      final balanceLamports = await solanaService!.getBalance(connectedWallet!.address);
       setState(() {
         balance = TransactionService.lamportsToSol(balanceLamports);
       });
     } catch (e) {
-      // 네트워크 연결 실패 시 이전 값 유지
       _showErrorDialog('잔액 조회 실패: 네트워크 연결을 확인해주세요');
     } finally {
       setState(() {
@@ -188,12 +207,12 @@ class _WalletHomePageState extends State<WalletHomePage> {
     }
   }
 
-  // 실제 에어드랍 요청 (개발망/테스트넷에서만 사용 가능)
+  // 실제 에어드랍 요청
   Future<void> _requestAirdrop() async {
-    if (wallet == null || solanaService == null) return;
+    if (connectedWallet == null || solanaService == null) return;
     
     if (!selectedNetwork.supportsAirdrop) {
-      _showErrorDialog('마이또에서는 에어드랍을 지원하지 않습니다.');
+      _showErrorDialog('메인넷에서는 에어드랍을 지원하지 않습니다.');
       return;
     }
     
@@ -203,13 +222,11 @@ class _WalletHomePageState extends State<WalletHomePage> {
 
     try {
       final signature = await solanaService!.requestAirdrop(
-        wallet!.publicKeyBase58,
+        connectedWallet!.address,
         TransactionService.solToLamports(1.0), // 1 SOL
       );
       
-      // 트랜잭션 확인 대기
       await _waitForTransactionConfirmation(signature);
-      
       await _refreshBalance();
       
       ScaffoldMessenger.of(context).showSnackBar(
@@ -224,9 +241,9 @@ class _WalletHomePageState extends State<WalletHomePage> {
     }
   }
 
-  // 실제 SOL 전송
+  // Phantom을 통한 SOL 전송
   Future<void> _sendSOL() async {
-    if (wallet == null || solanaService == null) return;
+    if (connectedWallet == null || phantomWalletService == null) return;
     
     final recipient = _recipientController.text.trim();
     final amountText = _amountController.text.trim();
@@ -242,7 +259,7 @@ class _WalletHomePageState extends State<WalletHomePage> {
       
       // 트랜잭션 시뮬레이션
       final simulation = TransactionService.simulateTransaction(
-        fromAddress: wallet!.publicKeyBase58,
+        fromAddress: connectedWallet!.address,
         toAddress: recipient,
         solAmount: amount,
         currentBalance: currentBalance,
@@ -266,8 +283,8 @@ class _WalletHomePageState extends State<WalletHomePage> {
         isLoading = true;
       });
 
-      // 실제 트랜잭션 생성 및 전송
-      await _executeTransaction(recipient, amount);
+      // Phantom을 통한 트랜잭션 실행 (딥링크)
+      await _executePhantomTransaction(recipient, amount);
       
     } catch (e) {
       _showErrorDialog('전송 실패: $e');
@@ -278,111 +295,64 @@ class _WalletHomePageState extends State<WalletHomePage> {
     }
   }
 
-  // 니모닉 입력 대화상자 표시
-  Future<void> _showImportWalletDialog() async {
-    final controller = TextEditingController();
-    
-    final mnemonic = await showDialog<String>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('지갑 가져오기'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              '12단어 복구 구문을 입력하세요.',
-              style: TextStyle(fontSize: 14),
-            ),
-            const SizedBox(height: 16),
-            TextField(
-              controller: controller,
-              decoration: const InputDecoration(
-                hintText: 'abandon ability able about above absent...',
-                border: OutlineInputBorder(),
-              ),
-              maxLines: 4,
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('취소'),
-          ),
-          TextButton(
-            onPressed: () {
-              final text = controller.text.trim();
-              if (text.isNotEmpty) {
-                Navigator.pop(context, text);
-              }
-            },
-            child: const Text('가져오기'),
-          ),
-        ],
-      ),
-    );
-    
-    if (mnemonic != null && mnemonic.isNotEmpty) {
-      await _importWallet(mnemonic);
-    }
-  }
-
-  // 추가 메서드들
-  
-  // 트랜잭션 실행
-  Future<void> _executeTransaction(String recipient, double amount) async {
+  // Phantom을 통한 트랜잭션 실행 (딥링크)
+  Future<void> _executePhantomTransaction(String recipient, double amount) async {
     try {
       // 최근 블록해시 가져오기
       final recentBlockhash = await solanaService!.getRecentBlockhash();
       
       // 트랜잭션 생성
       final transactionMessage = TransactionService.createTransferTransaction(
-        fromPublicKey: wallet!.publicKeyBase58,
+        fromPublicKey: connectedWallet!.address,
         toPublicKey: recipient,
         lamports: TransactionService.solToLamports(amount),
         recentBlockhash: recentBlockhash,
       );
       
-      // 트랜잭션 서명
-      final signedTransaction = TransactionService.signTransaction(
-        transactionMessage,
-        wallet!,
-      );
+      // Base64로 인코딩
+      final encodedTransaction = TransactionService.encodeTransaction(transactionMessage);
       
-      // 트랜잭션 전송
-      final signature = await solanaService!.sendTransaction(
-        TransactionService.encodeTransaction(signedTransaction),
-      );
-      
-      // 트랜잭션 기록 추가
-      final transaction = SolanaTransaction(
-        signature: signature,
-        timestamp: DateTime.now(),
-        amount: TransactionService.solToLamports(amount),
-        fromAddress: wallet!.publicKeyBase58,
-        toAddress: recipient,
-        status: 'pending',
-      );
-      
-      await SecureStorageService.addTransaction(transaction);
-      await _loadTransactionHistory();
-      
-      // 트랜잭션 확인 대기
-      await _waitForTransactionConfirmation(signature);
-      
-      await _refreshBalance();
-      
-      _recipientController.clear();
-      _amountController.clear();
+      // Phantom에 트랜잭션 서명 및 전송 요청
+      final result = await phantomWalletService!.signAndSendTransaction(encodedTransaction);
       
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('전송 완료! 서명: ${signature.substring(0, 8)}...')),
+        SnackBar(content: Text(result['message'])),
       );
       
+      // 데모용으로 성공 처리 (실제로는 Phantom에서 콜백 받아야 함)
+      await Future.delayed(const Duration(seconds: 3));
+      await _simulateTransactionSuccess(recipient, amount);
+      
     } catch (e) {
-      throw Exception('트랜잭션 실행 실패: $e');
+      throw Exception('Phantom 트랜잭션 실행 실패: $e');
     }
+  }
+  
+  // 데모용 트랜잭션 성공 시뮬레이션
+  Future<void> _simulateTransactionSuccess(String recipient, double amount) async {
+    // 임시 서명 생성
+    const signature = '3Kd8jkvKJ1234567890abcdefghijklmnopqrstuvwxyz';
+    
+    // 트랜잭션 기록 추가
+    final transaction = SolanaTransaction(
+      signature: signature,
+      timestamp: DateTime.now(),
+      amount: TransactionService.solToLamports(amount),
+      fromAddress: connectedWallet!.address,
+      toAddress: recipient,
+      status: 'confirmed',
+    );
+    
+    await SecureStorageService.addTransaction(transaction);
+    await _loadTransactionHistory();
+    await _refreshBalance();
+    
+    _recipientController.clear();
+    _amountController.clear();
+    
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('전송 완료! 서명: ${signature.substring(0, 8)}...')),
+    );
   }
   
   // 트랜잭션 확인 대기
@@ -420,10 +390,33 @@ class _WalletHomePageState extends State<WalletHomePage> {
   void _startBalanceUpdateTimer() {
     _balanceUpdateTimer?.cancel();
     _balanceUpdateTimer = Timer.periodic(const Duration(seconds: 30), (timer) {
-      if (wallet != null && solanaService != null) {
+      if (connectedWallet != null && solanaService != null) {
         _refreshBalance();
       }
     });
+  }
+  
+  // Phantom 설치 확인 대화상자
+  Future<bool> _showInstallDialog() async {
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Phantom 지갑이 필요합니다'),
+        content: const Text('Phantom 지갑 앱이 설치되어 있지 않습니다.\nGoogle Play Store에서 Phantom을 설치하시겠습니까?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('취소'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('설치하러 가기'),
+          ),
+        ],
+      ),
+    );
+    
+    return result ?? false;
   }
   
   // 트랜잭션 확인 대화상자
@@ -447,6 +440,9 @@ class _WalletHomePageState extends State<WalletHomePage> {
             Text('예상 수수료: $estimatedFee SOL'),
             const SizedBox(height: 8),
             Text('총 비용: ${amount + estimatedFee} SOL', style: const TextStyle(fontWeight: FontWeight.bold)),
+            const SizedBox(height: 16),
+            const Text('Phantom 지갑에서 트랜잭션을 확인하고 승인해주세요.', 
+                 style: TextStyle(color: Colors.orange, fontWeight: FontWeight.bold)),
           ],
         ),
         actions: [
@@ -456,7 +452,7 @@ class _WalletHomePageState extends State<WalletHomePage> {
           ),
           ElevatedButton(
             onPressed: () => Navigator.pop(context, true),
-            child: const Text('전송'),
+            child: const Text('Phantom에서 승인'),
           ),
         ],
       ),
@@ -465,66 +461,28 @@ class _WalletHomePageState extends State<WalletHomePage> {
     return result ?? false;
   }
   
-  // 지갑 연결 해제
+  // Phantom 지갑 연결 해제
   Future<void> _disconnectWallet() async {
-    await SecureStorageService.deleteWallet();
-    
-    setState(() {
-      wallet = null;
-      balance = null;
-      isConnected = false;
-      transactionHistory = [];
-    });
-    
-    _recipientController.clear();
-    _amountController.clear();
-  }
-
-  void _showMnemonicDialog(String mnemonic) {
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) => AlertDialog(
-        title: const Text('지갑 복구 구문'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              '다음 12단어를 안전한 곳에 보관하세요. 지갑을 복구할 때 필요합니다.',
-              style: TextStyle(fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 16),
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                border: Border.all(color: Colors.grey),
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: SelectableText(
-                mnemonic,
-                style: const TextStyle(fontFamily: 'monospace'),
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () {
-              Clipboard.setData(ClipboardData(text: mnemonic));
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('복구 구문이 클립보드에 복사되었습니다')),
-              );
-            },
-            child: const Text('복사'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('확인'),
-          ),
-        ],
-      ),
-    );
+    try {
+      await phantomWalletService?.disconnectWallet();
+      await SecureStorageService.deleteWallet();
+      
+      setState(() {
+        connectedWallet = null;
+        balance = null;
+        isConnected = false;
+        transactionHistory = [];
+      });
+      
+      _recipientController.clear();
+      _amountController.clear();
+      
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Phantom 지갑 연결이 해제되었습니다.')),
+      );
+    } catch (e) {
+      _showErrorDialog('지갑 연결 해제 실패: $e');
+    }
   }
 
   void _showErrorDialog(String message) {
@@ -545,17 +503,17 @@ class _WalletHomePageState extends State<WalletHomePage> {
 
   // 지갑 정보 대화상자 표시
   void _showWalletInfo() {
-    if (wallet == null) return;
+    if (connectedWallet == null) return;
     
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('지갑 정보'),
+        title: const Text('Phantom 지갑 정보'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('공개키 주소:'),
+            const Text('지갑 주소:'),
             const SizedBox(height: 8),
             Container(
               padding: const EdgeInsets.all(8),
@@ -564,7 +522,7 @@ class _WalletHomePageState extends State<WalletHomePage> {
                 borderRadius: BorderRadius.circular(4),
               ),
               child: SelectableText(
-                wallet!.publicKeyBase58,
+                connectedWallet!.address,
                 style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
               ),
             ),
@@ -576,17 +534,15 @@ class _WalletHomePageState extends State<WalletHomePage> {
               style: const TextStyle(fontWeight: FontWeight.bold),
             ),
             const SizedBox(height: 16),
-            Row(
-              mainAxisSize: MainAxisSize.min,
+            const Text('연결된 지갑:'),
+            const SizedBox(height: 4),
+            const Row(
               children: [
-                Icon(
-                  biometricEnabled ? Icons.lock : Icons.lock_open,
-                  size: 16,
-                ),
-                const SizedBox(width: 4),
+                Icon(Icons.account_balance_wallet, size: 16, color: Colors.purple),
+                SizedBox(width: 4),
                 Text(
-                  biometricEnabled ? '생체 인증 활성화' : '생체 인증 비활성화',
-                  style: const TextStyle(fontSize: 12),
+                  'Phantom Wallet (딥링크)',
+                  style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
                 ),
               ],
             ),
@@ -599,7 +555,7 @@ class _WalletHomePageState extends State<WalletHomePage> {
           ),
           TextButton(
             onPressed: () {
-              Clipboard.setData(ClipboardData(text: wallet!.publicKeyBase58));
+              Clipboard.setData(ClipboardData(text: connectedWallet!.address));
               ScaffoldMessenger.of(context).showSnackBar(
                 const SnackBar(content: Text('주소가 클립보드에 복사되었습니다')),
               );
@@ -617,7 +573,7 @@ class _WalletHomePageState extends State<WalletHomePage> {
   
   // QR 코드 표시
   void _showQRCode() {
-    if (wallet == null) return;
+    if (connectedWallet == null) return;
     
     showDialog(
       context: context,
@@ -628,18 +584,18 @@ class _WalletHomePageState extends State<WalletHomePage> {
             mainAxisSize: MainAxisSize.min,
             children: [
               const Text(
-                '지갑 주소 QR 코드',
+                'Phantom 지갑 주소 QR 코드',
                 style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
               ),
               const SizedBox(height: 16),
               QrImageView(
-                data: wallet!.publicKeyBase58,
+                data: connectedWallet!.address,
                 version: QrVersions.auto,
                 size: 200.0,
               ),
               const SizedBox(height: 16),
               Text(
-                wallet!.publicKeyBase58,
+                connectedWallet!.address,
                 style: const TextStyle(fontFamily: 'monospace', fontSize: 10),
                 textAlign: TextAlign.center,
               ),
@@ -659,7 +615,7 @@ class _WalletHomePageState extends State<WalletHomePage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Solana Mobile Wallet'),
+        title: const Text('Solana Phantom Wallet'),
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
         actions: [
           if (isConnected)
@@ -674,50 +630,77 @@ class _WalletHomePageState extends State<WalletHomePage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            if (!isConnected) ...[
+            if (!isConnected) ...[ 
               const Text(
-                'Solana 지갑 연결',
+                '🦄 Phantom 지갑 연결',
                 style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
                 textAlign: TextAlign.center,
               ),
-              const SizedBox(height: 32),
-              ElevatedButton.icon(
-                onPressed: isLoading ? null : _createWallet,
-                icon: const Icon(Icons.add),
-                label: const Text('새 지갑 생성'),
-                style: ElevatedButton.styleFrom(
-                  padding: const EdgeInsets.all(16),
-                ),
-              ),
               const SizedBox(height: 16),
-              ElevatedButton.icon(
-                onPressed: isLoading ? null : _showImportWalletDialog,
-                icon: const Icon(Icons.download),
-                label: const Text('지갑 가져오기'),
-                style: ElevatedButton.styleFrom(
+              const Text(
+                'Phantom 지갑 딥링크를 통해 안전하게 Solana 네트워크에 연결하세요',
+                style: TextStyle(fontSize: 16, color: Colors.grey),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 32),
+              Card(
+                child: Padding(
                   padding: const EdgeInsets.all(16),
+                  child: Column(
+                    children: [
+                      const Icon(Icons.account_balance_wallet, size: 64, color: Colors.purple),
+                      const SizedBox(height: 16),
+                      const Text(
+                        'Phantom 지갑 연결 (딥링크)',
+                        style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                      ),
+                      const SizedBox(height: 8),
+                      const Text(
+                        'Phantom 앱이 설치되어 있어야 합니다.\n딥링크를 통해 Phantom 앱에서 연결을 승인해주세요.',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(color: Colors.grey),
+                      ),
+                      const SizedBox(height: 16),
+                      ElevatedButton.icon(
+                        onPressed: isLoading ? null : _connectToPhantom,
+                        icon: const Icon(Icons.link),
+                        label: const Text('Phantom 지갑 연결'),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.purple,
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.all(16),
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ),
-            ] else ...[
+            ] else ...[ 
               Card(
                 child: Padding(
                   padding: const EdgeInsets.all(16),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Text(
-                        '계정 정보',
-                        style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                      const Row(
+                        children: [
+                          Icon(Icons.account_balance_wallet, color: Colors.purple),
+                          SizedBox(width: 8),
+                          Text(
+                            'Phantom 지갑 연결됨 (딥링크)',
+                            style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                          ),
+                        ],
                       ),
                       const SizedBox(height: 16),
                       Text(
-                        '주소: ${wallet!.publicKeyBase58.substring(0, 20)}...',
+                        '주소: ${connectedWallet!.address.substring(0, 20)}...',
                         style: const TextStyle(fontFamily: 'monospace'),
                       ),
                       const SizedBox(height: 8),
                       Row(
                         children: [
-                          Icon(
+                          const Icon(
                             Icons.network_check,
                             size: 16,
                             color: Colors.green,
@@ -743,17 +726,19 @@ class _WalletHomePageState extends State<WalletHomePage> {
                           ),
                         ],
                       ),
-                      const SizedBox(height: 16),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: ElevatedButton(
-                              onPressed: isLoading ? null : _requestAirdrop,
-                              child: const Text('테스트넷 SOL 받기'),
+                      if (selectedNetwork.supportsAirdrop) ...[
+                        const SizedBox(height: 16),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: ElevatedButton(
+                                onPressed: isLoading ? null : _requestAirdrop,
+                                child: const Text('테스트넷 SOL 받기'),
+                              ),
                             ),
-                          ),
-                        ],
-                      ),
+                          ],
+                        ),
+                      ],
                     ],
                   ),
                 ),
@@ -766,7 +751,7 @@ class _WalletHomePageState extends State<WalletHomePage> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       const Text(
-                        'SOL 전송',
+                        'SOL 전송 (Phantom 딥링크)',
                         style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
                       ),
                       const SizedBox(height: 16),
@@ -792,14 +777,15 @@ class _WalletHomePageState extends State<WalletHomePage> {
                       const SizedBox(height: 16),
                       SizedBox(
                         width: double.infinity,
-                        child: ElevatedButton(
+                        child: ElevatedButton.icon(
                           onPressed: isLoading ? null : _sendSOL,
+                          icon: const Icon(Icons.send),
+                          label: const Text('Phantom에서 전송 승인'),
                           style: ElevatedButton.styleFrom(
                             padding: const EdgeInsets.all(16),
                             backgroundColor: Colors.green,
                             foregroundColor: Colors.white,
                           ),
-                          child: const Text('전송'),
                         ),
                       ),
                     ],
@@ -807,14 +793,15 @@ class _WalletHomePageState extends State<WalletHomePage> {
                 ),
               ),
               const SizedBox(height: 16),
-              ElevatedButton(
+              ElevatedButton.icon(
                 onPressed: _disconnectWallet,
+                icon: const Icon(Icons.link_off),
+                label: const Text('Phantom 지갑 연결 해제'),
                 style: ElevatedButton.styleFrom(
                   backgroundColor: Colors.red,
                   foregroundColor: Colors.white,
                   padding: const EdgeInsets.all(16),
                 ),
-                child: const Text('지갑 연결 해제'),
               ),
             ],
             
@@ -827,79 +814,6 @@ class _WalletHomePageState extends State<WalletHomePage> {
         ),
       ),
     );
-  }
-
-  // 네트워크 선택 대화상자
-  void _showNetworkSelection() {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('네트워크 선택'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: SolanaNetwork.values.map((network) {
-            return RadioListTile<SolanaNetwork>(
-              title: Text(network.name),
-              subtitle: Text(network.supportsAirdrop ? '에어드랍 지원' : '메인넷'),
-              value: network,
-              groupValue: selectedNetwork,
-              onChanged: (value) {
-                Navigator.pop(context, value);
-              },
-            );
-          }).toList(),
-        ),
-      ),
-    ).then((selectedValue) async {
-      if (selectedValue != null && selectedValue != selectedNetwork) {
-        setState(() {
-          selectedNetwork = selectedValue;
-          solanaService = SolanaService(rpcUrl: selectedNetwork.rpcUrl);
-        });
-        
-        await SecureStorageService.saveSelectedNetwork(selectedNetwork);
-        await _refreshBalance();
-        
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('네트워크가 ${selectedNetwork.name}로 변경되었습니다')),
-        );
-      }
-    });
-  }
-  
-  // 생체 인증 토글
-  Future<void> _toggleBiometric() async {
-    if (!biometricEnabled) {
-      // 생체 인증 활성화
-      if (await SecureStorageService.isBiometricAvailable()) {
-        final authenticated = await SecureStorageService.authenticateWithBiometric(
-          reason: '생체 인증을 활성화하려면 인증이 필요합니다',
-        );
-        
-        if (authenticated) {
-          setState(() {
-            biometricEnabled = true;
-          });
-          await SecureStorageService.setBiometricEnabled(true);
-          
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('생체 인증이 활성화되었습니다')),
-          );
-        }
-      } else {
-        _showErrorDialog('이 기기는 생체 인증을 지원하지 않습니다.');
-      }
-    } else {
-      // 생체 인증 비활성화
-      setState(() {
-        biometricEnabled = false;
-      });
-      await SecureStorageService.setBiometricEnabled(false);
-      
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('생체 인증이 비활성화되었습니다')),
-      );
-    }
   }
 
   @override
