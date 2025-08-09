@@ -32,14 +32,12 @@ class PhantomWalletService {
         },
       );
       
-      // Phantom 앱 실행
+      // Phantom 앱 실행 시도
       final launched = await launchUrl(phantomUrl, mode: LaunchMode.externalApplication);
       
       if (!launched) {
-        // Phantom 앱이 설치되지 않은 경우 Play Store로 이동
-        final playStoreUrl = Uri.parse('https://play.google.com/store/apps/details?id=app.phantom');
-        await launchUrl(playStoreUrl, mode: LaunchMode.externalApplication);
-        throw Exception('Phantom 지갑이 설치되지 않았습니다. 설치 후 다시 시도해주세요.');
+        // Phantom 앱이 설치되지 않은 경우
+        throw Exception('Phantom 지갑을 실행할 수 없습니다.\n\n앱이 설치되지 않았거나 최신 버전이 아닐 수 있습니다.\nPlay Store에서 Phantom을 설치하거나 업데이트해주세요.');
       }
       
       // 실제 연결은 딥링크 콜백에서 처리
@@ -165,15 +163,11 @@ class PhantomWalletService {
     }
   }
   
-  // Phantom 지갑이 설치되어 있는지 확인
+  // Phantom 지갑이 설치되어 있는지 확인 (Android 11+ 권한 문제로 항상 true 반환)
   static Future<bool> isPhantomWalletInstalled() async {
-    try {
-      final phantomUrl = Uri.parse('phantom://');
-      final canLaunch = await canLaunchUrl(phantomUrl);
-      return canLaunch;
-    } catch (e) {
-      return false;
-    }
+    // Android 11+ 에서는 canLaunchUrl이 제대로 작동하지 않을 수 있음
+    // Phantom이 매우 일반적이므로 설치되어 있다고 가정하고 연결 시도
+    return true;
   }
   
   // Phantom 지갑 설치 페이지로 이동

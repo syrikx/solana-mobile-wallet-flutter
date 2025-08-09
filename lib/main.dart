@@ -123,17 +123,7 @@ class _WalletHomePageState extends State<WalletHomePage> {
     });
 
     try {
-      // Phantom 설치 확인
-      final isInstalled = await PhantomWalletService.isPhantomWalletInstalled();
-      if (!isInstalled) {
-        final install = await _showInstallDialog();
-        if (install) {
-          await PhantomWalletService.openPhantomInstallPage();
-        }
-        return;
-      }
-      
-      // Phantom 앱에 연결 요청
+      // Phantom 앱에 바로 연결 요청 (설치 확인 생략)
       final result = await phantomWalletService!.connectWallet();
       
       // 연결 대기 메시지 표시
@@ -149,7 +139,13 @@ class _WalletHomePageState extends State<WalletHomePage> {
       await _simulatePhantomConnection();
       
     } catch (e) {
-      _showErrorDialog('Phantom 지갑 연결 실패: $e');
+      final errorMessage = e.toString();
+      if (errorMessage.contains('실행할 수 없습니다')) {
+        // Phantom 설치/업데이트 필요한 경우 특별 처리
+        _showPhantomInstallDialog();
+      } else {
+        _showErrorDialog('Phantom 지갑 연결 실패: $e');
+      }
     } finally {
       setState(() {
         isLoading = false;
@@ -396,27 +392,50 @@ class _WalletHomePageState extends State<WalletHomePage> {
     });
   }
   
-  // Phantom 설치 확인 대화상자
-  Future<bool> _showInstallDialog() async {
-    final result = await showDialog<bool>(
+  // Phantom 설치/업데이트 대화상자
+  Future<void> _showPhantomInstallDialog() async {
+    await showDialog(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Phantom 지갑이 필요합니다'),
-        content: const Text('Phantom 지갑 앱이 설치되어 있지 않습니다.\nGoogle Play Store에서 Phantom을 설치하시겠습니까?'),
+        title: const Text('🦄 Phantom 지갑 필요'),
+        content: const Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Phantom 지갑을 실행할 수 없습니다.'),
+            SizedBox(height: 12),
+            Text('다음을 확인해주세요:', style: TextStyle(fontWeight: FontWeight.bold)),
+            SizedBox(height: 8),
+            Text('• Phantom 앱이 설치되어 있나요?'),
+            Text('• 최신 버전으로 업데이트되어 있나요?'),
+            Text('• 앱이 정상적으로 작동하나요?'),
+            SizedBox(height: 12),
+            Text('Play Store에서 Phantom을 설치하거나 업데이트한 후 다시 시도해주세요.'),
+          ],
+        ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('취소'),
+            onPressed: () => Navigator.pop(context),
+            child: const Text('나중에'),
           ),
           ElevatedButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('설치하러 가기'),
+            onPressed: () async {
+              Navigator.pop(context);
+              await PhantomWalletService.openPhantomInstallPage();
+            },
+            child: const Text('Play Store 열기'),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.pop(context);
+              _connectToPhantom(); // 다시 시도
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.green),
+            child: const Text('다시 시도'),
           ),
         ],
       ),
     );
-    
-    return result ?? false;
   }
   
   // 트랜잭션 확인 대화상자
@@ -656,7 +675,7 @@ class _WalletHomePageState extends State<WalletHomePage> {
                       ),
                       const SizedBox(height: 8),
                       const Text(
-                        'Phantom 앱이 설치되어 있어야 합니다.\n딥링크를 통해 Phantom 앱에서 연결을 승인해주세요.',
+                        'Phantom 앱을 실행하여 연결을 승인해주세요.\n\n앱이 실행되지 않으면 Play Store에서\nPhantom을 설치하거나 업데이트해주세요.',
                         textAlign: TextAlign.center,
                         style: TextStyle(color: Colors.grey),
                       ),
@@ -669,6 +688,15 @@ class _WalletHomePageState extends State<WalletHomePage> {
                           backgroundColor: Colors.purple,
                           foregroundColor: Colors.white,
                           padding: const EdgeInsets.all(16),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      OutlinedButton.icon(
+                        onPressed: () => PhantomWalletService.openPhantomInstallPage(),
+                        icon: const Icon(Icons.download),
+                        label: const Text('Phantom 설치/업데이트'),
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: Colors.purple,
                         ),
                       ),
                     ],
