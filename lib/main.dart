@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:qr_flutter/qr_flutter.dart';
+import 'package:app_links/app_links.dart';
 
 // Local imports
 import 'services/solana_service.dart';
@@ -62,6 +63,7 @@ class _WalletHomePageState extends State<WalletHomePage> {
   
   StreamSubscription<ConnectivityResult>? _connectivitySubscription;
   Timer? _balanceUpdateTimer;
+  StreamSubscription<Uri>? _linkSubscription;
 
   @override
   void initState() {
@@ -73,6 +75,7 @@ class _WalletHomePageState extends State<WalletHomePage> {
     await _loadSettings();
     await _checkPhantomWallet();
     _startBalanceUpdateTimer();
+    _initDeepLinkListener();
   }
 
   // 설정 불러오기
@@ -82,6 +85,131 @@ class _WalletHomePageState extends State<WalletHomePage> {
     phantomWalletService = PhantomWalletService();
     biometricEnabled = await SecureStorageService.isBiometricEnabled();
     transactionHistory = await SecureStorageService.loadTransactionHistory();
+  }
+
+  // 딥링크 리스너 초기화
+  void _initDeepLinkListener() {
+    final appLinks = AppLinks();
+    
+    // 앱이 실행 중일 때 들어오는 딥링크 처리
+    _linkSubscription = appLinks.uriLinkStream.listen(
+      (Uri uri) {
+        _handleDeepLink(uri);
+      },
+      onError: (err) {
+        print('Deep link error: $err');
+      },
+    );
+  }
+
+  // 딥링크 처리
+  void _handleDeepLink(Uri uri) {
+    print('Received deep link: $uri');
+    
+    if (uri.scheme == 'solana_wallet_flutter') {
+      if (uri.host == 'connected') {
+        _handlePhantomConnectionCallback(uri);
+      } else if (uri.host == 'signed') {
+        _handlePhantomTransactionCallback(uri);
+      }
+    }
+  }
+
+  // Phantom 연결 콜백 처리
+  void _handlePhantomConnectionCallback(Uri uri) {
+    try {
+      final queryParams = uri.queryParameters;
+      final publicKey = queryParams['phantom_encryption_public_key'];
+      
+      if (publicKey != null && publicKey.isNotEmpty) {
+        _processPhantomConnection(publicKey);
+      } else {
+        final errorCode = queryParams['errorCode'];
+        final errorMessage = queryParams['errorMessage'] ?? '알 수 없는 오류';
+        _showErrorDialog('Phantom 연결 실패: $errorMessage (코드: $errorCode)');
+      }
+    } catch (e) {
+      _showErrorDialog('딥링크 처리 중 오류: $e');
+    }
+  }
+
+  // Phantom 트랜잭션 콜백 처리  
+  void _handlePhantomTransactionCallback(Uri uri) {
+    try {
+      final queryParams = uri.queryParameters;
+      final signature = queryParams['signature'];
+      
+      if (signature != null && signature.isNotEmpty) {
+        _processPhantomTransactionSuccess(signature);
+      } else {
+        final errorCode = queryParams['errorCode'];
+        final errorMessage = queryParams['errorMessage'] ?? '알 수 없는 오류';
+        _showErrorDialog('Phantom 트랜잭션 실패: $errorMessage (코드: $errorCode)');
+      }
+    } catch (e) {
+      _showErrorDialog('트랜잭션 콜백 처리 중 오류: $e');
+    }
+  }
+
+  // 실제 Phantom 연결 처리
+  Future<void> _processPhantomConnection(String publicKey) async {
+    try {
+      phantomWalletService?.setConnectedWallet(publicKey);
+      connectedWallet = PhantomWallet.fromAddress(publicKey);
+      
+      // 연결 정보 저장
+      await SecureStorageService.saveWalletData({
+        'phantom_address': publicKey,
+        'phantom_label': 'Phantom Wallet (Real)',
+        'connected_at': DateTime.now().millisecondsSinceEpoch,
+      });
+      
+      setState(() {
+        isConnected = true;
+        isLoading = false;
+      });
+      
+      await _refreshBalance();
+      await _loadTransactionHistory();
+      
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Phantom 지갑이 연결되었습니다!\\n주소: ${publicKey.substring(0, 8)}...')),
+      );
+    } catch (e) {
+      _showErrorDialog('Phantom 연결 처리 중 오류: $e');
+      setState(() {
+        isLoading = false;
+      });
+    }
+  }
+
+  // 실제 Phantom 트랜잭션 성공 처리
+  Future<void> _processPhantomTransactionSuccess(String signature) async {
+    try {
+      // 트랜잭션 확인 대기
+      await _waitForTransactionConfirmation(signature);
+      
+      // 잔액 새로고침
+      await _refreshBalance();
+      await _loadTransactionHistory();
+      
+      // 입력 필드 초기화
+      _recipientController.clear();
+      _amountController.clear();
+      
+      setState(() {
+        isLoading = false;
+      });
+      
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('트랜잭션이 성공적으로 전송되었습니다!\\n서명: ${signature.substring(0, 8)}...')),
+      );
+    } catch (e) {
+      _showErrorDialog('트랜잭션 처리 중 오류: $e');
+      setState(() {
+        isLoading = false;
+      });
+    }
   }
   
   // Phantom 지갑 설치 및 연결 상태 확인
@@ -134,9 +262,7 @@ class _WalletHomePageState extends State<WalletHomePage> {
         ),
       );
       
-      // 데모용으로 임시 지갑 주소 생성 (실제로는 Phantom에서 콜백 받아야 함)
-      await Future.delayed(const Duration(seconds: 2));
-      await _simulatePhantomConnection();
+      // 실제 Phantom 응답을 기다림 (딥링크 콜백으로 처리)
       
     } catch (e) {
       final errorMessage = e.toString();
@@ -153,33 +279,6 @@ class _WalletHomePageState extends State<WalletHomePage> {
     }
   }
   
-  // 데모용 Phantom 연결 시뮬레이션
-  Future<void> _simulatePhantomConnection() async {
-    // 실제 환경에서는 Phantom 앱에서 딥링크 콜백을 통해 주소를 받아옴
-    // 여기서는 데모용으로 임시 주소 생성
-    const demoAddress = '7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU';
-    
-    phantomWalletService?.setConnectedWallet(demoAddress);
-    connectedWallet = PhantomWallet.fromAddress(demoAddress);
-    
-    // 연결 정보 저장
-    await SecureStorageService.saveWalletData({
-      'phantom_address': demoAddress,
-      'phantom_label': 'Phantom Wallet',
-      'connected_at': DateTime.now().millisecondsSinceEpoch,
-    });
-    
-    setState(() {
-      isConnected = true;
-    });
-    
-    await _refreshBalance();
-    await _loadTransactionHistory();
-    
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Phantom 지갑이 연결되었습니다!\n주소: ${demoAddress.substring(0, 8)}...')),
-    );
-  }
 
   // 실제 블록체인에서 잔액 조회
   Future<void> _refreshBalance() async {
@@ -315,41 +414,13 @@ class _WalletHomePageState extends State<WalletHomePage> {
         SnackBar(content: Text(result['message'])),
       );
       
-      // 데모용으로 성공 처리 (실제로는 Phantom에서 콜백 받아야 함)
-      await Future.delayed(const Duration(seconds: 3));
-      await _simulateTransactionSuccess(recipient, amount);
+      // 실제 Phantom 응답을 기다림 (딥링크 콜백으로 처리)
       
     } catch (e) {
       throw Exception('Phantom 트랜잭션 실행 실패: $e');
     }
   }
   
-  // 데모용 트랜잭션 성공 시뮬레이션
-  Future<void> _simulateTransactionSuccess(String recipient, double amount) async {
-    // 임시 서명 생성
-    const signature = '3Kd8jkvKJ1234567890abcdefghijklmnopqrstuvwxyz';
-    
-    // 트랜잭션 기록 추가
-    final transaction = SolanaTransaction(
-      signature: signature,
-      timestamp: DateTime.now(),
-      amount: TransactionService.solToLamports(amount),
-      fromAddress: connectedWallet!.address,
-      toAddress: recipient,
-      status: 'confirmed',
-    );
-    
-    await SecureStorageService.addTransaction(transaction);
-    await _loadTransactionHistory();
-    await _refreshBalance();
-    
-    _recipientController.clear();
-    _amountController.clear();
-    
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('전송 완료! 서명: ${signature.substring(0, 8)}...')),
-    );
-  }
   
   // 트랜잭션 확인 대기
   Future<void> _waitForTransactionConfirmation(String signature) async {
@@ -850,6 +921,7 @@ class _WalletHomePageState extends State<WalletHomePage> {
     _amountController.dispose();
     _connectivitySubscription?.cancel();
     _balanceUpdateTimer?.cancel();
+    _linkSubscription?.cancel();
     super.dispose();
   }
 }

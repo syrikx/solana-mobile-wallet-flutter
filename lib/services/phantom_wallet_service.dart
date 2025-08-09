@@ -9,7 +9,8 @@ class PhantomWalletService {
   
   // App 정보
   static const String _appName = 'Solana Mobile Wallet';
-  static const String _redirectUrl = 'https://phantom.app';
+  static const String _connectRedirectUrl = 'solana_wallet_flutter://connected';
+  static const String _transactionRedirectUrl = 'solana_wallet_flutter://signed';
   
   PhantomWalletService();
   
@@ -25,10 +26,10 @@ class PhantomWalletService {
         host: 'v1',
         path: '/connect',
         queryParameters: {
-          'app_url': _redirectUrl,
+          'app_url': _connectRedirectUrl,
           'dapp_name': _appName,
           'nonce': nonce,
-          'redirect_link': _redirectUrl,
+          'redirect_link': _connectRedirectUrl,
         },
       );
       
@@ -103,7 +104,7 @@ class PhantomWalletService {
         queryParameters: {
           'dapp_name': _appName,
           'nonce': nonce,
-          'redirect_link': _redirectUrl,
+          'redirect_link': _transactionRedirectUrl,
           'transaction': transaction,
         },
       );
@@ -142,7 +143,7 @@ class PhantomWalletService {
         queryParameters: {
           'dapp_name': _appName,
           'nonce': nonce,
-          'redirect_link': _redirectUrl,
+          'redirect_link': _transactionRedirectUrl,
           'message': encodedMessage,
         },
       );
