@@ -20,35 +20,82 @@ class PhantomWalletService {
   
   PhantomWalletService();
   
-  // Phantom 지갑 연결 요청 (딥링크 방식)
+  // Phantom 지갑 연결 요청 (여러 방식 시도)
   Future<Map<String, dynamic>> connectWallet() async {
     try {
-      // 암호화를 위한 키 쌍 생성
-      _generateEncryptionKeyPair();
+      // 여러 가지 방법을 순서대로 시도
+      bool launched = false;
+      Uri phantomUrl;
       
-      // Phantom 딥링크 URL 생성 (올바른 형식 사용)
-      final phantomUrl = Uri.https('phantom.app', '/ul/v1/connect', {
-        'app_url': Uri.encodeComponent(_appUrl),
-        'dapp_encryption_public_key': _dappPublicKey!,
-        'redirect_link': Uri.encodeComponent(_connectRedirectUrl),
-        'cluster': 'devnet', // 테스트용으로 devnet 사용
-      });
+      // 방법 1: Phantom 커스텀 스킴 (가장 직접적)
+      try {
+        phantomUrl = Uri(
+          scheme: 'phantom',
+          host: 'v1',
+          path: '/connect',
+          queryParameters: {
+            'app_url': _appUrl,
+            'dapp_name': _appName,
+            'redirect_link': _connectRedirectUrl,
+            'cluster': 'devnet',
+          },
+        );
+        
+        print('시도 1 - Phantom custom scheme: $phantomUrl');
+        launched = await launchUrl(phantomUrl, mode: LaunchMode.externalApplication);
+        
+        if (launched) {
+          print('Phantom custom scheme 성공!');
+        }
+      } catch (e) {
+        print('Phantom custom scheme 실패: $e');
+      }
       
-      print('Phantom Connect URL: $phantomUrl');
+      // 방법 2: Universal Link (방법 1이 실패한 경우)
+      if (!launched) {
+        try {
+          phantomUrl = Uri.https('phantom.app', '/ul/v1/connect', {
+            'app_url': _appUrl,
+            'redirect_link': _connectRedirectUrl,
+            'cluster': 'devnet',
+          });
+          
+          print('시도 2 - Universal Link: $phantomUrl');
+          launched = await launchUrl(phantomUrl, mode: LaunchMode.externalApplication);
+          
+          if (launched) {
+            print('Universal Link 성공!');
+          }
+        } catch (e) {
+          print('Universal Link 실패: $e');
+        }
+      }
       
-      // Phantom 앱 실행 시도
-      final launched = await launchUrl(phantomUrl, mode: LaunchMode.externalApplication);
+      // 방법 3: 간단한 Phantom 앱 열기 (연결은 수동으로)
+      if (!launched) {
+        try {
+          phantomUrl = Uri.parse('phantom://');
+          
+          print('시도 3 - 간단한 Phantom 앱 열기: $phantomUrl');
+          launched = await launchUrl(phantomUrl, mode: LaunchMode.externalApplication);
+          
+          if (launched) {
+            print('Phantom 앱 열기 성공! 수동 연결을 위해 앱에서 dApp 브라우저를 사용하세요.');
+          }
+        } catch (e) {
+          print('Phantom 앱 열기 실패: $e');
+        }
+      }
       
       if (!launched) {
-        // Phantom 앱이 설치되지 않은 경우
+        // 모든 방법이 실패한 경우
         throw Exception('Phantom 지갑을 실행할 수 없습니다.\n\n앱이 설치되지 않았거나 최신 버전이 아닐 수 있습니다.\nPlay Store에서 Phantom을 설치하거나 업데이트해주세요.');
       }
       
       // 실제 연결은 딥링크 콜백에서 처리
       return {
         'status': 'connecting',
-        'message': 'Phantom 지갑에서 연결을 승인해주세요.',
-        'dapp_public_key': _dappPublicKey,
+        'message': 'Phantom 지갑이 열렸습니다.\n\n연결을 완료하려면:\n1. Phantom에서 설정 → dApps → 새 연결 추가\n2. 또는 Phantom 내 브라우저에서 dApp 페이지 방문',
       };
     } catch (e) {
       throw Exception('Phantom 지갑 연결 실패: $e');

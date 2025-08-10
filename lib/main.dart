@@ -507,6 +507,137 @@ class _WalletHomePageState extends State<WalletHomePage> {
     });
   }
   
+  // 수동 연결 도움말 대화상자
+  Future<void> _showManualConnectionDialog() async {
+    await showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('🔧 수동 연결 방법'),
+        content: const SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('자동 연결이 작동하지 않는 경우:', style: TextStyle(fontWeight: FontWeight.bold)),
+              SizedBox(height: 12),
+              Text('방법 1: Phantom 설정에서 연결'),
+              Text('1. Phantom 앱 열기'),
+              Text('2. 설정 → dApps → 새 연결 추가'),
+              Text('3. 이 앱 이름 검색 후 연결'),
+              SizedBox(height: 12),
+              Text('방법 2: Phantom 브라우저 사용'),
+              Text('1. Phantom 앱 내 브라우저 열기'),
+              Text('2. dApp 웹사이트 방문'),
+              Text('3. Connect 버튼으로 연결'),
+              SizedBox(height: 12),
+              Text('방법 3: 지갑 주소 직접 입력'),
+              Text('1. Phantom에서 지갑 주소 복사'),
+              Text('2. 이 앱에서 직접 입력'),
+              SizedBox(height: 12),
+              Text('💡 팁: 최신 Phantom 버전 사용 권장', style: TextStyle(color: Colors.blue)),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('닫기'),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.pop(context);
+              _showManualAddressInput();
+            },
+            child: const Text('주소 직접 입력'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // 지갑 주소 직접 입력 대화상자
+  Future<void> _showManualAddressInput() async {
+    final addressController = TextEditingController();
+    
+    final result = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('지갑 주소 직접 입력'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text('Phantom 지갑에서 주소를 복사하여 아래에 붙여넣으세요:'),
+            const SizedBox(height: 16),
+            TextField(
+              controller: addressController,
+              decoration: const InputDecoration(
+                labelText: '지갑 주소',
+                hintText: '44자리 Base58 주소를 입력하세요',
+                border: OutlineInputBorder(),
+              ),
+              maxLines: 2,
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('취소'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, addressController.text.trim()),
+            child: const Text('연결'),
+          ),
+        ],
+      ),
+    );
+    
+    if (result != null && result.isNotEmpty) {
+      await _processManualConnection(result);
+    }
+  }
+
+  // 수동 연결 처리
+  Future<void> _processManualConnection(String address) async {
+    try {
+      // 주소 형식 기본 검증
+      if (address.length < 32 || address.length > 44) {
+        throw Exception('올바른 지갑 주소 형식이 아닙니다.');
+      }
+      
+      setState(() {
+        isLoading = true;
+      });
+      
+      phantomWalletService?.setConnectedWallet(address);
+      connectedWallet = PhantomWallet.fromAddress(address);
+      
+      // 연결 정보 저장
+      await SecureStorageService.saveWalletData({
+        'phantom_address': address,
+        'phantom_label': 'Phantom Wallet (수동 연결)',
+        'connected_at': DateTime.now().millisecondsSinceEpoch,
+      });
+      
+      setState(() {
+        isConnected = true;
+        isLoading = false;
+      });
+      
+      await _refreshBalance();
+      await _loadTransactionHistory();
+      
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('지갑이 수동으로 연결되었습니다!\n주소: ${address.substring(0, 8)}...')),
+      );
+    } catch (e) {
+      _showErrorDialog('수동 연결 실패: $e');
+      setState(() {
+        isLoading = false;
+      });
+    }
+  }
+
   // Phantom 설치/업데이트 대화상자
   Future<void> _showPhantomInstallDialog() async {
     await showDialog(
@@ -790,7 +921,7 @@ class _WalletHomePageState extends State<WalletHomePage> {
                       ),
                       const SizedBox(height: 8),
                       const Text(
-                        'Phantom 앱을 실행하여 연결을 승인해주세요.\n\n앱이 실행되지 않으면 Play Store에서\nPhantom을 설치하거나 업데이트해주세요.',
+                        'Phantom 지갑 연결 방법:\n\n1. 자동 연결: 아래 버튼으로 Phantom 열기\n2. 수동 연결: Phantom에서 설정 → dApps\n3. 브라우저: Phantom 내장 브라우저 사용',
                         textAlign: TextAlign.center,
                         style: TextStyle(color: Colors.grey),
                       ),
@@ -812,6 +943,15 @@ class _WalletHomePageState extends State<WalletHomePage> {
                         label: const Text('Phantom 설치/업데이트'),
                         style: OutlinedButton.styleFrom(
                           foregroundColor: Colors.purple,
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      OutlinedButton.icon(
+                        onPressed: _showManualConnectionDialog,
+                        icon: const Icon(Icons.help_outline),
+                        label: const Text('수동 연결 도움말'),
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: Colors.orange,
                         ),
                       ),
                     ],
