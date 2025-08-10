@@ -1,14 +1,20 @@
 import 'dart:convert';
 import 'dart:math';
+import 'dart:typed_data';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:crypto/crypto.dart';
 import '../models/wallet_model.dart';
 
 class PhantomWalletService {
   String? _connectedAddress;
   bool _isConnected = false;
+  String? _sessionToken;
+  Uint8List? _dappPrivateKey;
+  String? _dappPublicKey;
   
   // App 정보
   static const String _appName = 'Solana Mobile Wallet';
+  static const String _appUrl = 'https://solana-mobile-wallet-flutter.app';
   static const String _connectRedirectUrl = 'solana_wallet_flutter://connected';
   static const String _transactionRedirectUrl = 'solana_wallet_flutter://signed';
   
@@ -17,21 +23,18 @@ class PhantomWalletService {
   // Phantom 지갑 연결 요청 (딥링크 방식)
   Future<Map<String, dynamic>> connectWallet() async {
     try {
-      // 연결 요청용 nonce 생성
-      final nonce = _generateNonce();
+      // 암호화를 위한 키 쌍 생성
+      _generateEncryptionKeyPair();
       
-      // Phantom 딥링크 URL 생성
-      final phantomUrl = Uri(
-        scheme: 'phantom',
-        host: 'v1',
-        path: '/connect',
-        queryParameters: {
-          'app_url': _connectRedirectUrl,
-          'dapp_name': _appName,
-          'nonce': nonce,
-          'redirect_link': _connectRedirectUrl,
-        },
-      );
+      // Phantom 딥링크 URL 생성 (올바른 형식 사용)
+      final phantomUrl = Uri.https('phantom.app', '/ul/v1/connect', {
+        'app_url': Uri.encodeComponent(_appUrl),
+        'dapp_encryption_public_key': _dappPublicKey!,
+        'redirect_link': Uri.encodeComponent(_connectRedirectUrl),
+        'cluster': 'devnet', // 테스트용으로 devnet 사용
+      });
+      
+      print('Phantom Connect URL: $phantomUrl');
       
       // Phantom 앱 실행 시도
       final launched = await launchUrl(phantomUrl, mode: LaunchMode.externalApplication);
@@ -42,20 +45,33 @@ class PhantomWalletService {
       }
       
       // 실제 연결은 딥링크 콜백에서 처리
-      // 여기서는 연결 요청만 수행
       return {
         'status': 'connecting',
         'message': 'Phantom 지갑에서 연결을 승인해주세요.',
-        'nonce': nonce,
+        'dapp_public_key': _dappPublicKey,
       };
     } catch (e) {
       throw Exception('Phantom 지갑 연결 실패: $e');
     }
   }
   
+  // 암호화를 위한 키 쌍 생성
+  void _generateEncryptionKeyPair() {
+    final random = Random.secure();
+    _dappPrivateKey = Uint8List(32);
+    for (int i = 0; i < 32; i++) {
+      _dappPrivateKey![i] = random.nextInt(256);
+    }
+    
+    // Base58 인코딩을 위한 간단한 구현
+    _dappPublicKey = base64Encode(_dappPrivateKey!);
+    print('Generated dapp public key: $_dappPublicKey');
+  }
+
   // 지갑 연결 상태 설정 (딥링크 콜백에서 호출)
-  void setConnectedWallet(String address) {
+  void setConnectedWallet(String address, {String? sessionToken}) {
     _connectedAddress = address;
+    _sessionToken = sessionToken;
     _isConnected = true;
   }
   
